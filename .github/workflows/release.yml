@@ -1,0 +1,60 @@
+name: Release
+
+# Lançamento do SDK (ADR 0135). Só manual e só da main. O Swift Package Manager publica pela
+# tag do repositório; o pacote do código leva atestação de proveniência do GitHub.
+# Pendente: assinar a tag com a chave de assinatura da Trusto, guardada no environment `release`.
+#
+# Antes do primeiro lançamento (débito #120 da Trusto):
+# - proteção da branch main: PR com revisão obrigatória, sem push direto, CI verde;
+# - environment `release` com revisor obrigatório, que este job usa;
+# - segundo fator em todas as contas com escrita no repositório.
+# Sem isso, um push direto na main chegaria aos aplicativos de todos os clientes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Versão a lançar (x.y.z), igual à do CHANGELOG e de TrustoConsent.sdkVersion
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Conferir versão
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          grep -q "sdkVersion = \"$VERSION\"" Sources/TrustoConsent/TrustoConsent.swift
+          grep -q "^## $VERSION$" CHANGELOG.md
+      - name: Testes
+        run: swift test
+      - name: Pacote do código
+        env:
+          VERSION: ${{ inputs.version }}
+        run: git archive --format=zip --output "TrustoConsent-$VERSION.zip" HEAD
+      - name: Atestação de proveniência
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: TrustoConsent-${{ inputs.version }}.zip
+      - name: Tag e release
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        # A tag aponta para o commit testado acima. Ainda sem assinatura própria (ver o topo).
+        run: |
+          gh release create "$VERSION" "TrustoConsent-$VERSION.zip" --target "$GITHUB_SHA" --title "$VERSION" --notes-file <(awk "/^## $VERSION$/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md)
