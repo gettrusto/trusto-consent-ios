@@ -6,9 +6,13 @@ name: Release
 #
 # Antes do primeiro lançamento (débito #120 da Trusto):
 # - proteção da branch main: PR com revisão obrigatória, sem push direto, CI verde;
-# - environment `release` com revisor obrigatório, que este job usa;
+# - environment `release` com revisor obrigatório, que o job `release` usa;
+# - ruleset de tags `*.*.*` que proíba mover e apagar: o SPM resolve pela tag, e uma tag
+#   movida depois do lançamento entregaria outro código a quem resolver de novo;
 # - segundo fator em todas as contas com escrita no repositório.
 # Sem isso, um push direto na main chegaria aos aplicativos de todos os clientes.
+#
+# Toda action fixada por SHA, com a versão em comentário.
 
 on:
   workflow_dispatch:
@@ -22,18 +26,18 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  # Testes sem nenhuma permissão de escrita: código de teste ou de plugin não alcança token
+  # que mexa no repositório.
+  verify:
     if: github.ref == 'refs/heads/main'
     runs-on: macos-15
-    environment: release
+    timeout-minutes: 20
     permissions:
-      contents: write
-      id-token: write
-      attestations: write
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0
+          persist-credentials: false
       - name: Conferir versão
         env:
           VERSION: ${{ inputs.version }}
@@ -43,18 +47,41 @@ jobs:
           grep -q "^## $VERSION$" CHANGELOG.md
       - name: Testes
         run: swift test
+      - name: Build para iOS
+        run: xcodebuild -scheme TrustoConsent -destination 'generic/platform=iOS' build
+
+  release:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Conferir versão
+        env:
+          VERSION: ${{ inputs.version }}
+        run: echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
       - name: Pacote do código
         env:
           VERSION: ${{ inputs.version }}
         run: git archive --format=zip --output "TrustoConsent-$VERSION.zip" HEAD
       - name: Atestação de proveniência
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: TrustoConsent-${{ inputs.version }}.zip
       - name: Tag e release
         env:
           VERSION: ${{ inputs.version }}
+          # O token só neste passo: os anteriores não o têm.
           GH_TOKEN: ${{ github.token }}
-        # A tag aponta para o commit testado acima. Ainda sem assinatura própria (ver o topo).
+        # A tag aponta para o commit testado no job `verify`. Ainda sem assinatura própria (ver o topo).
         run: |
-          gh release create "$VERSION" "TrustoConsent-$VERSION.zip" --target "$GITHUB_SHA" --title "$VERSION" --notes-file <(awk "/^## $VERSION$/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md)
+          awk -v v="## $VERSION" '$0==v{flag=1;next}/^## /{flag=0}flag' CHANGELOG.md > notes.md
+          gh release create "$VERSION" "TrustoConsent-$VERSION.zip" --target "$GITHUB_SHA" --title "$VERSION" --notes-file notes.md

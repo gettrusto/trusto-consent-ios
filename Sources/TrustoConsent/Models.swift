@@ -62,6 +62,8 @@ public struct ConsentDecision: Codable, Equatable, Sendable {
     public internal(set) var expiresAt: Date?
     /// Prazo do banner no momento da decisão, para o vencimento antes do recibo.
     let consentExpiryDays: Int
+    /// Finalidades obrigatórias do banner da decisão: concedidas mesmo com a decisão vencida.
+    let requiredKeys: [String]
     /// Identificador local, que liga a decisão ao item da fila.
     let localId: UUID
 
@@ -71,10 +73,12 @@ public struct ConsentDecision: Codable, Equatable, Sendable {
 
 /// Erros do SDK.
 public enum TrustoConsentError: Error, Equatable, Sendable {
-    /// `configure` não foi chamado.
+    /// `TrustoConsent.shared` antes de `configure`.
     case notConfigured
     /// A chave não tem o formato `trusto_pk_{test|live}_…`.
     case invalidPublishableKey
+    /// O endereço do coletor não é `https` (só `localhost` e `127.0.0.1` aceitam `http`, para teste).
+    case invalidEndpoint
     /// O identificador do aplicativo (bundle id) não está disponível.
     case missingAppIdentifier
     /// O coletor recusou a chave: ausente, retirada, vencida ou de outro ambiente.

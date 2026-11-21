@@ -162,10 +162,32 @@ final class FlowTests: XCTestCase {
 
     func testVisitorIdIsStableAndRandom() async throws {
         let h = Harness()
-        let first = try h.make().visitorId()
-        XCTAssertEqual(try h.make().visitorId(), first, "o mesmo identificador no mesmo aparelho")
-        XCTAssertEqual(h.secure.read("visitorId"), first)
-        XCTAssertNotEqual(try Harness().make().visitorId(), first)
+        let first = try XCTUnwrap(try h.make().resolveVisitorId())
+        XCTAssertEqual(try h.make().resolveVisitorId(), first, "o mesmo identificador no mesmo aparelho")
+        XCTAssertEqual(h.secure.value("visitorId"), first)
+        XCTAssertEqual(h.secure.writes, 1, "criado uma vez")
+        XCTAssertNotEqual(try Harness().make().resolveVisitorId(), first)
+    }
+
+    func testKeychainUnavailableDefersTheSendWithoutANewIdentifier() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .json(201, receiptJSON))
+        _ = h.secure.write("visitorId", value: "0f8fad5b-d9cb-469f-a165-70867728950e")
+        h.secure.unavailable = true
+        let consent = try h.make()
+        let decision = try await consent.acceptAll()
+        XCTAssertTrue(consent.isGranted("analytics"), "vale no aparelho mesmo assim")
+        XCTAssertFalse(decision.isRecorded)
+        XCTAssertTrue(h.transport.requests(to: "/v1/app/records").isEmpty, "nada sai sem o identificador verdadeiro")
+        XCTAssertEqual(consent.pendingCount, 1)
+
+        h.secure.unavailable = false
+        h.clock.advance(6)
+        await consent.flush()
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(h.transport.requests(to: "/v1/app/records").first?.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["visitorId"] as? String, "0f8fad5b-d9cb-469f-a165-70867728950e", "o identificador que já existia")
+        XCTAssertEqual(consent.pendingCount, 0)
     }
 
     func testOfflineDecisionIsAppliedQueuedAndSentLater() async throws {
@@ -217,7 +239,7 @@ final class FlowTests: XCTestCase {
     }
 
     func testTerminalAndDiscardedResponsesLeaveTheQueue() async throws {
-        for status in [400, 401, 403, 404, 413, 202] {
+        for status in [400, 403, 413, 202] {
             let h = Harness()
             h.transport.on("/v1/app/config", .json(200, configJSON()))
             h.transport.on("/v1/app/records", status == 202 ? .json(202, ["discarded": true]) : .json(status, ["error": "x"]))
@@ -226,6 +248,60 @@ final class FlowTests: XCTestCase {
             XCTAssertEqual(consent.pendingCount, 0, "\(status) sai da fila")
             XCTAssertFalse(decision.isRecorded)
         }
+    }
+
+    func testRefusedKeyOrMissingRouteWaitsLongInsteadOfDroppingTheProof() async throws {
+        for status in [401, 404] {
+            let h = Harness()
+            h.transport.on("/v1/app/config", .json(200, configJSON()))
+            h.transport.on("/v1/app/records", .json(status, ["error": "x"]), .json(201, receiptJSON))
+            let consent = try h.make()
+            _ = try await consent.acceptAll()
+            XCTAssertEqual(consent.pendingCount, 1, "\(status) fica na fila")
+            XCTAssertEqual(h.scheduler.last, 3_600, "\(status): reenvio em 1 h")
+            h.clock.advance(3_599)
+            await consent.flush()
+            XCTAssertEqual(h.transport.requests(to: "/v1/app/records").count, 1)
+            h.clock.advance(1)
+            await consent.flush()
+            XCTAssertEqual(consent.pendingCount, 0)
+            XCTAssertTrue(consent.decision?.isRecorded == true)
+        }
+    }
+
+    func testQueueIsStrictlyInOrder() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline, .json(201, receiptJSON))
+        let consent = try h.make()
+        _ = try await consent.acceptAll()
+        XCTAssertEqual(consent.pendingCount, 1)
+        // A segunda decisão chega com a primeira esperando o reenvio: não passa à frente.
+        _ = try await consent.rejectAll()
+        XCTAssertEqual(h.transport.requests(to: "/v1/app/records").count, 1, "nada sai antes do prazo do primeiro")
+        XCTAssertEqual(consent.pendingCount, 2)
+        h.clock.advance(5)
+        await consent.flush()
+        let actions = try h.transport.requests(to: "/v1/app/records").map { request -> String in
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+            return try XCTUnwrap(body["action"] as? String)
+        }
+        XCTAssertEqual(actions, ["accept_all", "accept_all", "reject_all"], "a mais nova chega por último")
+        XCTAssertEqual(consent.pendingCount, 0)
+        XCTAssertEqual(consent.decision?.action, .rejectAll)
+    }
+
+    func testRetryIsScheduledAndResumedOnReopen() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline)
+        let consent = try h.make()
+        _ = try await consent.acceptAll()
+        XCTAssertEqual(h.scheduler.last, 5, "reenvio agendado para o prazo do primeiro")
+        // Reaberto depois do prazo: a rodada é agendada na hora.
+        h.clock.advance(10)
+        _ = try h.make()
+        XCTAssertEqual(h.scheduler.last, 0)
     }
 
     func testOutdatedBannerAsksAgain() async throws {
@@ -249,11 +325,19 @@ final class FlowTests: XCTestCase {
         let consent = try h.make()
         XCTAssertTrue(consent.needsConsent)
         XCTAssertFalse(consent.isGranted("analytics"))
+        XCTAssertFalse(consent.isGranted("necessary"), "sem banner nem decisão, nada se sabe")
+        _ = try await consent.loadConfig()
+        XCTAssertTrue(consent.isGranted("necessary"), "obrigatória do banner, mesmo sem decisão")
         _ = try await consent.acceptAll()
         XCTAssertFalse(consent.needsConsent)
         h.clock.advance(30 * 86_400 + 1)
         XCTAssertTrue(consent.needsConsent, "sem recibo, vence por decidedAt + prazo do banner")
         XCTAssertFalse(consent.isGranted("analytics"))
+        let reopened = try Harness().make()
+        XCTAssertFalse(reopened.isGranted("necessary"))
+        // Vencida e sem banner em memória: a obrigatória da decisão continua.
+        h.files.remove(Persisted.config)
+        XCTAssertTrue(try h.make().isGranted("necessary"))
     }
 
     func testReceiptExpiryWins() async throws {
@@ -333,5 +417,47 @@ final class FlowTests: XCTestCase {
         XCTAssertNil(consent.decision)
         XCTAssertEqual(consent.pendingCount, 0)
         XCTAssertTrue(h.transport.requests(to: "/v1/app/records").isEmpty)
+    }
+}
+
+final class SafetyTests: XCTestCase {
+    func testEndpointMustBeHttps() {
+        XCTAssertTrue(TrustoConsent.isValidEndpoint(URL(string: "https://consent.gettrusto.io")!))
+        XCTAssertTrue(TrustoConsent.isValidEndpoint(URL(string: "http://localhost:8080")!))
+        XCTAssertTrue(TrustoConsent.isValidEndpoint(URL(string: "http://127.0.0.1:8080")!))
+        XCTAssertFalse(TrustoConsent.isValidEndpoint(URL(string: "http://consent.gettrusto.io")!))
+        XCTAssertFalse(TrustoConsent.isValidEndpoint(URL(string: "http://10.0.2.2")!))
+        XCTAssertFalse(TrustoConsent.isValidEndpoint(URL(string: "https://user:pass@consent.gettrusto.io")!))
+        XCTAssertThrowsError(try TrustoConsent(publishableKey: validKey, endpoint: URL(string: "http://consent.gettrusto.io")!, appIdentifier: bundleId)) {
+            XCTAssertEqual($0 as? TrustoConsentError, .invalidEndpoint)
+        }
+    }
+
+    func testFilesCarryAFormatVersionAndUnknownOnesAreDiscarded() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline)
+        _ = try await h.make().acceptAll()
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(h.files.load(Persisted.decision))) as? [String: Any])
+        XCTAssertEqual(saved["v"] as? Int, 1)
+        XCTAssertNotNil(try h.make().decision)
+
+        h.files.save(Persisted.decision, data: Data(#"{"v":2,"value":{}}"#.utf8))
+        h.files.save(Persisted.queue, data: Data("lixo".utf8))
+        let reopened = try h.make()
+        XCTAssertNil(reopened.decision, "versão desconhecida")
+        XCTAssertEqual(reopened.pendingCount, 0, "arquivo corrompido")
+    }
+
+    func testSharedThrowsBeforeConfigureAndConfigureIsReused() throws {
+        TrustoConsent.resetSharedForTesting()
+        XCTAssertThrowsError(try TrustoConsent.shared) { XCTAssertEqual($0 as? TrustoConsentError, .notConfigured) }
+        let first = try TrustoConsent.configure(publishableKey: validKey, endpoint: URL(string: "https://consent.example")!)
+        XCTAssertTrue(try TrustoConsent.shared === first)
+        XCTAssertTrue(try TrustoConsent.configure(publishableKey: validKey, endpoint: URL(string: "https://consent.example")!) === first, "mesma chave e endereço")
+        let other = try TrustoConsent.configure(publishableKey: "trusto_pk_test_" + String(repeating: "B", count: 32), endpoint: URL(string: "https://consent.example")!)
+        XCTAssertFalse(other === first)
+        XCTAssertTrue(first.isClosed, "a anterior para de enviar")
+        TrustoConsent.resetSharedForTesting()
     }
 }

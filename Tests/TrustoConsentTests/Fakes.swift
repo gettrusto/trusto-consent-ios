@@ -55,8 +55,34 @@ final class FakeTransport: ConsentHTTPTransport, @unchecked Sendable {
 final class MemorySecureStore: ConsentSecureStore, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: String] = [:]
-    func read(_ key: String) -> String? { lock.lock(); defer { lock.unlock() }; return values[key] }
-    func write(_ key: String, value: String) { lock.lock(); values[key] = value; lock.unlock() }
+    /// Simula o Keychain antes do primeiro desbloqueio.
+    var unavailable = false
+    private(set) var writes = 0
+    func read(_ key: String) -> SecureRead {
+        lock.lock(); defer { lock.unlock() }
+        if unavailable { return .unavailable }
+        return values[key].map(SecureRead.value) ?? .notFound
+    }
+    func write(_ key: String, value: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if unavailable { return false }
+        writes += 1
+        values[key] = value
+        return true
+    }
+    func value(_ key: String) -> String? { lock.lock(); defer { lock.unlock() }; return values[key] }
+}
+
+/// Guarda o que foi agendado, sem rodar: o teste decide quando enviar.
+final class FakeScheduler: RetryScheduler, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var delays: [TimeInterval] = []
+    private(set) var cancelled = 0
+    func schedule(after delay: TimeInterval, _ work: @escaping @Sendable () async -> Void) -> ScheduledRetry {
+        lock.lock(); delays.append(delay); lock.unlock()
+        return ScheduledRetry { [weak self] in self?.lock.lock(); self?.cancelled += 1; self?.lock.unlock() }
+    }
+    var last: TimeInterval? { lock.lock(); defer { lock.unlock() }; return delays.last }
 }
 
 /// Disco em memória, compartilhável entre instâncias para simular o app reaberto.
@@ -99,6 +125,7 @@ struct Harness {
     let secure = MemorySecureStore()
     let files = MemoryFileStore()
     let clock = ManualClock()
+    let scheduler = FakeScheduler()
 
     func make() throws -> TrustoConsent {
         try TrustoConsent(
@@ -108,7 +135,8 @@ struct Harness {
             transport: transport,
             secureStore: secure,
             fileStore: files,
-            clock: clock
+            clock: clock,
+            scheduler: scheduler
         )
     }
 }
