@@ -127,10 +127,10 @@ struct Harness {
     let clock = ManualClock()
     let scheduler = FakeScheduler()
 
-    func make() throws -> TrustoConsent {
+    func make(key: String = validKey, endpoint: String = "https://consent.example") throws -> TrustoConsent {
         try TrustoConsent(
-            publishableKey: validKey,
-            endpoint: URL(string: "https://consent.example")!,
+            publishableKey: key,
+            endpoint: URL(string: endpoint)!,
             appIdentifier: bundleId,
             transport: transport,
             secureStore: secure,

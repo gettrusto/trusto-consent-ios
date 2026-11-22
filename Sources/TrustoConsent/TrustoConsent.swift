@@ -36,10 +36,15 @@ public final class TrustoConsent: @unchecked Sendable {
         if let current = sharedInstance, current.publishableKey == publishableKey, current.endpoint == endpoint {
             return current
         }
-        let instance = try TrustoConsent(publishableKey: publishableKey, endpoint: endpoint)
-        // Outra chave ou outro endereço: a anterior para de enviar e de avisar, para duas
-        // instâncias não mandarem a mesma fila.
+        // Valida antes de encerrar a anterior: chave ou endereço inválidos a mantêm em uso.
+        guard isValidPublishableKey(publishableKey) else { throw TrustoConsentError.invalidPublishableKey }
+        guard isValidEndpoint(endpoint) else { throw TrustoConsentError.invalidEndpoint }
+        guard let bundle = Bundle.main.bundleIdentifier, !bundle.isEmpty else { throw TrustoConsentError.missingAppIdentifier }
+        // Outra chave ou outro endereço: a anterior para de enviar, de avisar e de gravar antes
+        // de a nova ler o disco, para duas instâncias nunca disputarem os mesmos arquivos.
         sharedInstance?.shutdown()
+        sharedInstance = nil
+        let instance = try TrustoConsent(publishableKey: publishableKey, endpoint: endpoint)
         sharedInstance = instance
         return instance
     }
@@ -57,6 +62,21 @@ public final class TrustoConsent: @unchecked Sendable {
     /// `true` se a chave tem o formato da chave publicável. Não consulta a rede.
     public static func isValidPublishableKey(_ key: String) -> Bool {
         keyPattern.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil
+    }
+
+    /// `test` ou `live`, do prefixo da chave.
+    static func environment(of key: String) -> String {
+        guard let match = keyPattern.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)),
+              let range = Range(match.range(at: 1), in: key) else { return "unknown" }
+        return String(key[range])
+    }
+
+    /// O coletor sem diferença de maiúsculas no esquema e no host, nem barra final.
+    static func collectorKey(_ url: URL) -> String {
+        var path = url.path
+        while path.hasSuffix("/") { path.removeLast() }
+        let port = url.port.map { ":\($0)" } ?? ""
+        return "\(url.scheme?.lowercased() ?? "")://\(url.host?.lowercased() ?? "")\(port)\(path)"
     }
 
     /// Só `https`. `http` apenas para `localhost` e `127.0.0.1`, em teste no próprio Mac.
@@ -78,8 +98,10 @@ public final class TrustoConsent: @unchecked Sendable {
     private let device: DeviceInfo
 
     private let lock = NSLock()
-    /// Disco: uma gravação por vez, cada uma com o estado mais novo no momento em que grava.
-    private let ioQueue = DispatchQueue(label: "io.gettrusto.consent.io")
+    /// Disco: uma gravação por vez, cada uma com o estado mais novo no momento em que grava. Uma
+    /// fila só para todas as instâncias: a limpeza de escopo de uma nova espera a gravação que a
+    /// anterior já tenha começado.
+    private static let ioQueue = DispatchQueue(label: "io.gettrusto.consent.io")
     /// Keychain: lido e criado uma vez, fora do lock principal.
     private let visitorLock = NSLock()
     private var visitor: String?
@@ -115,6 +137,29 @@ public final class TrustoConsent: @unchecked Sendable {
         self.clock = clock
         self.scheduler = scheduler
         self.device = DeviceInfo.current()
+        // Banner, decisão e fila valem para um ambiente da chave (teste ou produção). Trocar de
+        // ambiente na mesma instalação (só acontece em desenvolvimento) descarta o que veio do
+        // outro: decidir sobre o banner dele, ou mandar a fila dele com a chave nova, gravaria
+        // prova na organização errada. Trocar de coletor descarta só o banner em cache: a fila
+        // e a decisão continuam, para uma mudança de endereço numa versão nova nunca apagar
+        // prova ainda não enviada. A rotação da chave mantém tudo.
+        let scope = Scope(environment: Self.environment(of: publishableKey), collector: Self.collectorKey(endpoint))
+        Self.ioQueue.sync {
+            let previous = Persisted.decode(Scope.self, fileStore.load(Persisted.scope))
+            guard previous != scope else { return }
+            if let previous {
+                let otherEnvironment = previous.environment != scope.environment
+                if otherEnvironment {
+                    fileStore.remove(Persisted.decision)
+                    fileStore.remove(Persisted.queue)
+                }
+                if otherEnvironment || previous.collector != scope.collector {
+                    fileStore.remove(Persisted.config)
+                    fileStore.remove(Persisted.meta)
+                }
+            }
+            fileStore.save(Persisted.scope, data: Persisted.encode(scope))
+        }
         // O estado volta do disco: a decisão e os envios pendentes sobrevivem ao app fechar.
         currentDecision = Persisted.decode(ConsentDecision.self, fileStore.load(Persisted.decision))
         queue = Persisted.decode([QueuedRecord].self, fileStore.load(Persisted.queue)) ?? []
@@ -382,7 +427,7 @@ public final class TrustoConsent: @unchecked Sendable {
                 return true
             }
         }
-        if dropConfigFile { ioQueue.sync { files.remove(Persisted.config) } }
+        if dropConfigFile { Self.ioQueue.sync { if !isClosed { files.remove(Persisted.config) } } }
         persistState()
         if changedDecision { notify() }
         return keepGoing
@@ -483,8 +528,10 @@ public final class TrustoConsent: @unchecked Sendable {
     /// Grava o estado na fila serial de disco. O retrato é tirado dentro dela: a última gravação
     /// é sempre a do estado mais novo, e duas gravações não terminam na ordem inversa.
     private func persistState() {
-        ioQueue.sync {
-            let (decision, pending, latest, config) = withLock { (currentDecision, queue, latestVersion, cachedConfig) }
+        Self.ioQueue.sync {
+            // Encerrada, a instância não grava: a que a substituiu é a dona dos arquivos.
+            let (stopped, decision, pending, latest, config) = withLock { (closed, currentDecision, queue, latestVersion, cachedConfig) }
+            if stopped { return }
             if let decision { files.save(Persisted.decision, data: Persisted.encode(decision)) } else { files.remove(Persisted.decision) }
             files.save(Persisted.queue, data: Persisted.encode(pending))
             files.save(Persisted.meta, data: Persisted.encode(Meta(latestVersion: latest)))
@@ -540,6 +587,13 @@ struct Meta: Codable {
     let latestVersion: Int?
 }
 
+/// Ambiente da chave e coletor dos arquivos guardados. Nunca a chave inteira: a rotação não
+/// muda o escopo.
+struct Scope: Codable, Equatable {
+    let environment: String
+    let collector: String
+}
+
 /// A decisão sem o identificador do visitante, que entra na hora do envio.
 struct RecordPayload: Codable, Equatable {
     let action: String
@@ -588,6 +642,7 @@ enum Persisted {
     static let queue = "queue.json"
     static let config = "config.json"
     static let meta = "meta.json"
+    static let scope = "scope.json"
     static let visitorKey = "visitorId"
 
     /// Versão do formato dos arquivos. Arquivo de outra versão é descartado (o SDK que o
