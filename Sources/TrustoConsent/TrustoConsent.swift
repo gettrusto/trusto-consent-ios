@@ -1,6 +1,6 @@
 import Foundation
 
-/// SDK de consentimento da Trusto para iOS, modo sem tela (ADR 0135, M2).
+/// SDK de consentimento da Trusto para iOS, modo sem tela.
 ///
 /// O aplicativo desenha a própria tela de consentimento; o SDK busca o banner publicado,
 /// guarda a decisão no aparelho, avisa quem precisa ligar ou desligar SDKs de terceiros e
