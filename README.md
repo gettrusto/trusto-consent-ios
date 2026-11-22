@@ -51,7 +51,7 @@ try await consent.revoke()
 ```
 
 - `needsConsent` é verdadeiro sem decisão, quando a decisão é de outra versão do banner ou quando venceu
-- `isGranted(_:)` diz se a finalidade está concedida agora: a obrigatória, sempre; a opcional, só com uma decisão dentro do prazo que a concedeu. Sem decisão, ou com ela vencida, nenhuma opcional está
+- `isGranted(_:)` diz se a finalidade está concedida agora: a obrigatória, sempre; a opcional, só com uma decisão dentro do prazo que a concedeu e sobre a versão do banner no ar. Sem decisão, com ela vencida ou com o banner republicado, nenhuma opcional está até a pessoa decidir de novo
 - A decisão vale no aparelho na hora, antes de chegar à Trusto. Sem rede, ela fica numa fila, em ordem, e o SDK reenvia sozinho enquanto o app roda, com espera crescente até 1 h; ao abrir o app de novo, a fila recomeça no `configure`. `flush()` força uma rodada, se quiser chamar ao voltar ao primeiro plano
 - Se o coletor recusar a chave ou a rota estiver fora do ar, a decisão fica na fila e é reenviada a cada hora, por até 30 dias: a prova não se perde enquanto o aplicativo volta a ser publicado
 - Banner, decisão e fila valem para um ambiente da chave (teste ou produção). Trocar de ambiente na mesma instalação descarta o que veio do outro. Trocar de coletor descarta só o banner em cache, e a fila segue para o coletor novo. A rotação da chave mantém tudo, e a fila sai com a chave nova
