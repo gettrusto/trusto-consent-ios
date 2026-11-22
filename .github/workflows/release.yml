@@ -1,16 +1,14 @@
 name: Release
 
-# Lançamento do SDK (ADR 0135). Só manual e só da main. O Swift Package Manager publica pela
+# Lançamento do SDK. Só manual e só da main. O Swift Package Manager publica pela
 # tag do repositório; o pacote do código leva atestação de proveniência do GitHub.
 # Pendente: assinar a tag com a chave de assinatura da Trusto, guardada no environment `release`.
 #
-# Antes do primeiro lançamento (débito #120 da Trusto):
-# - proteção da branch main: PR com revisão obrigatória, sem push direto, CI verde;
-# - environment `release` com revisor obrigatório, que o job `release` usa;
-# - ruleset de tags `*.*.*` que proíba mover e apagar: o SPM resolve pela tag, e uma tag
-#   movida depois do lançamento entregaria outro código a quem resolver de novo;
-# - segundo fator em todas as contas com escrita no repositório.
-# Sem isso, um push direto na main chegaria aos aplicativos de todos os clientes.
+# Proteções do repositório, configuradas no GitHub:
+# - `main` só por PR, com o CI verde, sem push direto nem force-push;
+# - environment `release` só da `main` e com aprovador obrigatório, que o job `release` usa;
+# - tags imutáveis: o SPM resolve pela tag, e uma tag movida depois do lançamento entregaria
+#   outro código a quem resolver de novo.
 #
 # Toda action fixada por SHA, com a versão em comentário.
 

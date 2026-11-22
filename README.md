@@ -82,8 +82,14 @@ swift test
 
 Os testes rodam no Mac, com transporte, armazenamento, relógio e agendador substituídos por `@testable import`. A infraestrutura é interna: a API pública é só `TrustoConsent`, os modelos e os erros.
 
+## Segurança
+
+Vulnerabilidades: veja [SECURITY.md](SECURITY.md). A publicação sai só pela pipeline de lançamento, a partir da `main`, com aprovação obrigatória e tags imutáveis.
+
 ## Pendências
 
-- Licença: a definir antes da primeira publicação
-- Publicação: só pela pipeline de lançamento, a partir da `main`, com revisão obrigatória, proteção de branch e tags imutáveis (débito #120 da Trusto)
 - Assinatura da tag de lançamento com a chave da Trusto
+
+## Licença
+
+[Apache License 2.0](LICENSE).

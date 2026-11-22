@@ -1,7 +1,7 @@
 // swift-tools-version:5.9
 import PackageDescription
 
-// SDK de consentimento da Trusto para iOS (ADR 0135, M2). Sem dependência além da plataforma.
+// SDK de consentimento da Trusto para iOS. Sem dependência além da plataforma.
 let package = Package(
     name: "TrustoConsent",
     platforms: [.iOS(.v15), .macOS(.v12)],

@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-Primeira versão, modo sem tela (ADR 0135, M2).
+Primeira versão, modo sem tela.
 
 - `configure(publishableKey:endpoint:)` e `shared`, com a chave publicável conferida no aparelho
 - `loadConfig()`: banner publicado do aplicativo, com cache de 60 s e o último guardado quando não há rede
