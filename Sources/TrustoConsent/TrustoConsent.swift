@@ -248,13 +248,15 @@ public final class TrustoConsent: @unchecked Sendable {
     }
 
     /// A finalidade está concedida agora. Obrigatória, sempre; opcional, só com decisão dentro
-    /// do prazo que a concedeu. Sem decisão, ou com ela vencida, nenhuma opcional está.
+    /// do prazo e sobre a versão do banner que está no ar. Sem decisão, com ela vencida ou com
+    /// outra versão do banner publicada, nenhuma opcional está até a pessoa decidir de novo.
     public func isGranted(_ categoryKey: String) -> Bool {
         withLock {
             if cachedConfig?.config.categories.contains(where: { $0.key == categoryKey && $0.required }) == true { return true }
             guard let decision = currentDecision else { return false }
             if decision.requiredKeys.contains(categoryKey) { return true }
             if isExpired(decision, now: clock.now()) { return false }
+            if let latest = latestVersion, latest != decision.configVersion { return false }
             return decision.categories[categoryKey] == true
         }
     }

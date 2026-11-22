@@ -382,6 +382,35 @@ final class FlowTests: XCTestCase {
         XCTAssertEqual(h.transport.requests(to: "/v1/app/config").count, 2)
     }
 
+    func testNewBannerTurnsOptionalsOffUntilDecidedAgain() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON(version: 2)), .json(200, configJSON(version: 3)))
+        h.transport.on("/v1/app/records", .json(201, receiptJSON))
+        let consent = try h.make()
+        _ = try await consent.loadConfig()
+        _ = try await consent.acceptAll()
+        XCTAssertTrue(consent.isGranted("analytics"))
+
+        // Banner republicado na versão 3: a decisão sobre a 2 não libera mais as opcionais.
+        h.clock.advance(61)
+        _ = try await consent.loadConfig()
+        XCTAssertTrue(consent.needsConsent)
+        XCTAssertFalse(consent.isGranted("analytics"))
+        XCTAssertTrue(consent.isGranted("necessary"))
+
+        _ = try await consent.acceptAll()
+        XCTAssertTrue(consent.isGranted("analytics"))
+    }
+
+    func testOutdatedReplyTurnsOptionalsOffBeforeReloading() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON(version: 2)))
+        h.transport.on("/v1/app/records", .json(409, ["error": "config_outdated", "version": 3]))
+        let consent = try h.make()
+        _ = try await consent.acceptAll()
+        XCTAssertFalse(consent.isGranted("analytics"))
+    }
+
     func testNeedsConsentWithoutDecisionAndAfterExpiry() async throws {
         let h = Harness()
         h.transport.on("/v1/app/config", .json(200, configJSON(expiryDays: 30)))
