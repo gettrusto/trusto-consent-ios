@@ -217,6 +217,7 @@ final class FlowTests: XCTestCase {
         XCTAssertEqual(other.pendingCount, 1, "a prova pendente nunca se perde por troca de endereço")
         XCTAssertNotNil(other.decision)
         XCTAssertNil(h.files.load(Persisted.config))
+        XCTAssertNil(h.files.load(Persisted.meta))
         XCTAssertEqual(TrustoConsent.collectorKey(URL(string: "HTTPS://Consent.Example/x/")!), TrustoConsent.collectorKey(URL(string: "https://consent.example/x")!))
     }
 
@@ -249,7 +250,8 @@ final class FlowTests: XCTestCase {
         // Uma decisão na instância encerrada não chega ao disco da nova.
         _ = try? await old.acceptAll()
         XCTAssertEqual(try h.make(key: "trusto_pk_live_" + String(repeating: "B", count: 32)).pendingCount, 0)
-        XCTAssertEqual(live.pendingCount, 0)
+        XCTAssertNil(h.files.load(Persisted.queue))
+        _ = live
     }
 
     func testOfflineDecisionIsAppliedQueuedAndSentLater() async throws {

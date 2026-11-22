@@ -66,7 +66,9 @@ public final class TrustoConsent: @unchecked Sendable {
 
     /// `test` ou `live`, do prefixo da chave.
     static func environment(of key: String) -> String {
-        key.hasPrefix("trusto_pk_live_") ? "live" : "test"
+        guard let match = keyPattern.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)),
+              let range = Range(match.range(at: 1), in: key) else { return "unknown" }
+        return String(key[range])
     }
 
     /// O coletor sem diferença de maiúsculas no esquema e no host, nem barra final.
