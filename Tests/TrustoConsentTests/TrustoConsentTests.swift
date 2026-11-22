@@ -402,6 +402,17 @@ final class FlowTests: XCTestCase {
         XCTAssertTrue(consent.isGranted("analytics"))
     }
 
+    func testOutdatedReplyWithoutVersionAlsoTurnsOptionalsOff() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON(version: 2)))
+        h.transport.on("/v1/app/records", .json(409, ["error": "config_outdated"]))
+        let consent = try h.make()
+        _ = try await consent.loadConfig()
+        _ = try await consent.acceptAll()
+        XCTAssertFalse(consent.isGranted("analytics"))
+        XCTAssertTrue(consent.isGranted("necessary"))
+    }
+
     func testOutdatedReplyTurnsOptionalsOffBeforeReloading() async throws {
         let h = Harness()
         h.transport.on("/v1/app/config", .json(200, configJSON(version: 2)))

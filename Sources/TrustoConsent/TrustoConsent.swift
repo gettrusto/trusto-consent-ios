@@ -218,7 +218,9 @@ public final class TrustoConsent: @unchecked Sendable {
             let cached = CachedConfig(config: config, fetchedAt: now)
             withLock {
                 cachedConfig = cached
-                latestVersion = config.version
+                // A maior versão conhecida, como no Android: um coletor com cache atrasado não
+                // devolve como atual o banner que um 409 já disse ter saído do ar.
+                latestVersion = max(latestVersion ?? config.version, config.version)
             }
             persistState()
             return config
