@@ -190,6 +190,68 @@ final class FlowTests: XCTestCase {
         XCTAssertEqual(consent.pendingCount, 0)
     }
 
+    func testChangingKeyEnvironmentDropsTheOtherEnvironmentsState() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline)
+        let consent = try h.make()
+        _ = try await consent.acceptAll()
+        XCTAssertEqual(consent.pendingCount, 1)
+        consent.shutdown()
+
+        let live = try h.make(key: "trusto_pk_live_" + String(repeating: "B", count: 32))
+        XCTAssertEqual(live.pendingCount, 0)
+        XCTAssertNil(live.decision)
+        XCTAssertTrue(live.needsConsent)
+    }
+
+    func testChangingCollectorDropsOnlyTheCachedBanner() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline)
+        let consent = try h.make()
+        _ = try await consent.acceptAll()
+        consent.shutdown()
+
+        let other = try h.make(endpoint: "https://other.example")
+        XCTAssertEqual(other.pendingCount, 1, "a prova pendente nunca se perde por troca de endereço")
+        XCTAssertNotNil(other.decision)
+        XCTAssertNil(h.files.load(Persisted.config))
+        XCTAssertEqual(TrustoConsent.collectorKey(URL(string: "HTTPS://Consent.Example/x/")!), TrustoConsent.collectorKey(URL(string: "https://consent.example/x")!))
+    }
+
+    func testKeyRotationKeepsTheQueueAndSendsWithTheNewKey() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline)
+        let consent = try h.make()
+        _ = try await consent.acceptAll()
+        consent.shutdown()
+
+        let rotated = "trusto_pk_test_" + String(repeating: "C", count: 32)
+        h.transport.on("/v1/app/records", .json(201, receiptJSON))
+        h.clock.advance(6)
+        let next = try h.make(key: rotated)
+        XCTAssertEqual(next.pendingCount, 1)
+        await next.flush()
+        XCTAssertEqual(next.pendingCount, 0)
+        XCTAssertEqual(h.transport.requests(to: "/v1/app/records").last?.value(forHTTPHeaderField: "Authorization"), "Bearer \(rotated)")
+    }
+
+    func testShutDownInstanceNeverWritesAgain() async throws {
+        let h = Harness()
+        h.transport.on("/v1/app/config", .json(200, configJSON()))
+        h.transport.on("/v1/app/records", .offline)
+        let old = try h.make()
+        _ = try await old.loadConfig()
+        let live = try h.make(key: "trusto_pk_live_" + String(repeating: "B", count: 32))
+        old.shutdown()
+        // Uma decisão na instância encerrada não chega ao disco da nova.
+        _ = try? await old.acceptAll()
+        XCTAssertEqual(try h.make(key: "trusto_pk_live_" + String(repeating: "B", count: 32)).pendingCount, 0)
+        XCTAssertEqual(live.pendingCount, 0)
+    }
+
     func testOfflineDecisionIsAppliedQueuedAndSentLater() async throws {
         let h = Harness()
         h.transport.on("/v1/app/config", .json(200, configJSON()))
